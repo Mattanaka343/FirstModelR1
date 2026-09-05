@@ -245,7 +245,5 @@ y = df['activity'].to_numpy()
 
 classifier = KNNClassifier(k=10)
 classifier.fit(X,y)
-print(f'Model Score{classifier.score_}')
-
-value == None
+print(f'Model Score: {classifier.score_}')
 
