@@ -188,21 +188,21 @@ print("\nMatriz de confusión:\n", confusion_matrix(y_test, y_pred))
 # (Opcional) Búsqueda de hiperparámetros con GridSearchCV
 # ---------------------------------------------------------
 
-# param_grid = {
-#     "svc__C": [0.1, 1, 10, 100],
-#     "svc__gamma": ["scale", "auto", 0.01, 0.1, 1],
-#     "svc__kernel": ["rbf", "linear"]
-# }
+param_grid = {
+    "svc__C": [0.1, 1, 10, 100],
+    "svc__gamma": ["scale", "auto", 0.01, 0.1, 1],
+    "svc__kernel": ["rbf", "linear"]
+}
 #
-# grid_search = GridSearchCV(pipeline, param_grid, cv=5, scoring="accuracy", n_jobs=-1)
-# grid_search.fit(X_train, y_train)
+grid_search = GridSearchCV(pipeline, param_grid, cv=5, scoring="accuracy", n_jobs=-1)
+grid_search.fit(X_train, y_train)
 #
-# print("\nMejores hiperparámetros:", grid_search.best_params_)
-# print("Mejor accuracy en CV:", grid_search.best_score_)
+print("\nMejores hiperparámetros:", grid_search.best_params_)
+print("Mejor accuracy en CV:", grid_search.best_score_)
 #
-# best_model = grid_search.best_estimator_
-# y_pred_best = best_model.predict(X_test)
-# print("\nAccuracy en test con mejor modelo:", accuracy_score(y_test, y_pred_best))
+best_model = grid_search.best_estimator_
+y_pred_best = best_model.predict(X_test)
+print("\nAccuracy en test con mejor modelo:", accuracy_score(y_test, y_pred_best))
 
 """
 Panorama general
