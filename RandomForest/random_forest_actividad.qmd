@@ -1,0 +1,330 @@
+---
+title: "Clasificación de Actividades con Random Forest"
+subtitle: "Migración desde KNN implementado a mano a scikit-learn"
+format:
+  html:
+    toc: true
+    toc-depth: 2
+    code-fold: false
+    number-sections: true
+execute:
+  eval: false
+---
+
+## Introducción
+
+Este documento utiliza el modelo de clasificación `RandomForestClassifier` de scikit-learn para la predicción de clases del dataset REHAB.
+
+A lo largo del documento se explican las decisiones  tomadas durante el entrenamiento del modelo
+
+## Librerías
+
+```{python}
+import os
+import re
+import numpy as np
+import pandas as pd
+from glob import glob
+
+from sklearn.model_selection import train_test_split, StratifiedKFold, GridSearchCV
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import (
+    accuracy_score,
+    balanced_accuracy_score,
+    classification_report,
+    confusion_matrix,
+    ConfusionMatrixDisplay,
+    f1_score,
+)
+import matplotlib.pyplot as plt
+```
+
+Utilizamos la carga de datos y selección de cáracteristicas trabajados en la actividad anterior para entrenar los nuevos modelos
+
+```{python}
+files = glob('../Data/d01_raw_data/*.npy')
+act_data = {}
+for file in files:
+    context = os.path.basename(file)
+    match = re.match(r"(.+?)_(\d+)\.(.+?)$", context)
+
+
+
+    if match.group(1) not in act_data:
+        act_data[match.group(1)] = {}
+
+    act_data[match.group(1)][match.group(2)] = np.load(file)
+```
+
+
+```{python}
+print(f"\nArchivos encontrados: {len(files)}")
+print(f"Actividades detectadas: {list(act_data.keys())}")
+for k, v in act_data.items():
+    print(f"  {k}: subkeys = {list(v.keys())}")
+```
+
+## Ingeniería de características
+
+Se conserva la misma función de extracción de features: media, desviación estándar y componentes de la FFT por sensor. 
+
+```{python}
+def extract_features(data, sensor_names, n_fft=5):
+    features = {}
+    for i, sensor in enumerate(sensor_names):
+        x = data[:, :, i]
+        features[f"{sensor}_mean"] = np.mean(x, axis=1)
+        features[f"{sensor}_std"] = np.std(x, axis=1)
+
+        fft = np.fft.rfft(x, axis=1)
+        fft_magnitude = np.abs(fft)[:, 1:]
+        fft_magnitude = fft_magnitude[:, :n_fft]
+
+        for j in range(n_fft):
+            features[f"{sensor}_fft_{j+1}"] = fft_magnitude[:, j]
+
+    return pd.DataFrame(features)
+```
+
+### Configuración de sensores
+
+```{python}
+sensor_names_1 = ["pitch1", "yaw1", "roll1", "pitch2", "yaw2", "roll2"]
+sensor_names_2 = ["f1", "f2", "f3", "f4", "f5", "pitch3"]
+```
+
+
+
+```{python}
+dfs = []
+n_fft = 10
+sensor_names_combined = sensor_names_1 + sensor_names_2
+all_sensor_names = list(dict.fromkeys(sensor_names_combined))
+feature_cols = []
+for sensor in all_sensor_names:
+    feature_cols.append(f"{sensor}_mean")
+    feature_cols.append(f"{sensor}_std")
+    for j in range(n_fft):
+        feature_cols.append(f"{sensor}_fft_{j+1}")
+
+for superkey, subdict in act_data.items():
+    data1 = subdict.get('1')
+    data2 = subdict.get('2')
+
+    if data1 is not None and data2 is not None:
+        n = min(data1.shape[0], data2.shape[0])
+        for i in range(n):
+            combined_mat = np.concatenate([data1[i], data2[i]], axis=1)
+
+            mid = len(sensor_names_1)
+            first_sum = np.abs(combined_mat[:, :mid]).sum()
+            second_sum = np.abs(combined_mat[:, mid:]).sum()
+
+            if (first_sum == 0 and second_sum > 0) or (second_sum == 0 and first_sum > 0):
+                continue
+
+            combined = combined_mat[np.newaxis, ...]
+            df_features = extract_features(combined, sensor_names_combined, n_fft=n_fft)
+            df_features = df_features.reindex(columns=feature_cols, fill_value=0.0)
+            df_features['activity'] = superkey
+            dfs.append(df_features)
+    else:
+        if data1 is not None:
+            for i in range(data1.shape[0]):
+                pad = np.zeros((data1.shape[1], len(sensor_names_2)))
+                combined = np.concatenate([data1[i], pad], axis=1)
+                combined = combined[np.newaxis, ...]
+                df_features = extract_features(combined, sensor_names_combined, n_fft=n_fft)
+                df_features = df_features.reindex(columns=feature_cols, fill_value=0.0)
+                df_features['activity'] = superkey
+                dfs.append(df_features)
+
+        if data2 is not None:
+            for i in range(data2.shape[0]):
+                pad = np.zeros((data2.shape[1], len(sensor_names_1)))
+                combined = np.concatenate([pad, data2[i]], axis=1)
+                combined = combined[np.newaxis, ...]
+                df_features = extract_features(combined, sensor_names_combined, n_fft=n_fft)
+                df_features = df_features.reindex(columns=feature_cols, fill_value=0.0)
+                df_features['activity'] = superkey
+                dfs.append(df_features)
+
+df = pd.concat(dfs, ignore_index=True)
+df = df[["activity"] + [col for col in df.columns if col != "activity"]]
+
+print("Configuración combinada:", df.shape)
+print("\nNaNs en df:", df.isna().sum().sum())
+```
+
+## Separación train / test
+
+- Se usa un split 80/20, proporción estándar que suele dar suficientes datos de entrenamiento sin sacrificar demasiado la confiabilidad de las métricas de prueba.
+- `stratify=y`: se estratifica por la clase (actividad) para que train y test conserven las mismas proporciones de cada actividad. Esto es importante si hay actividades con menos muestras que otras (clases desbalanceadas).
+- `random_state=42`: fija la semilla para que el experimento sea reproducible.
+
+```{python}
+X = df.drop(columns=['activity']).to_numpy()
+y = df['activity'].to_numpy()
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y,
+    test_size=0.20,
+    stratify=y,
+    random_state=42
+)
+
+print(f"\nTamaño train: {X_train.shape[0]} muestras")
+print(f"Tamaño test:  {X_test.shape[0]} muestras")
+```
+
+## Selección del modelo: ¿por qué Random Forest?
+
+las features aquí mezclan medias, desviaciones estándar y magnitudes de FFT, que pueden tener rangos muy diferentes. Random Forest, al basarse en árboles de decisión, no requiere normalizar/escalar los datos además maneja bien relaciones no lineales e interacciones entre features.
+Es a su vez menos sensible a outliers y ruido, porque el voto final se hace por mayoría entre muchos árboles entrenados con muestras y conjuntos de features distintos, reduciendo varianza.
+
+
+## Selección de hiperparámetros
+
+Se usa `GridSearchCV` con validación cruzada estratificada (`StratifiedKFold`) sobre el conjunto de entrenamiento únicamente.
+Esto con el objetivo probar sistemáticamente combinaciones de hiperparámetros y elegir la mejor según una métrica objetiva.
+cada fold conserva la proporción de clases; da una estimación más estable del desempeño que un único split de validación.
+La búsqueda de hiperparámetros se hace solo sobre `X_train`/`y_train`, sin tocar `X_test`/`y_test`, para que el conjunto de prueba final quede "limpio" y dé una estimación no sesgada del desempeño en datos nuevos.
+- `scoring='f1_macro'`: se optimiza F1 macro (promedio simple del F1 por clase) en lugar de accuracy, porque pondera todas las clases por igual, incluso si el número de muestras por actividad es desbalanceado.
+
+**Hiperparámetros incluidos en la búsqueda y su razón de ser:**
+
+| Hiperparámetro | Valores probados | Razón |
+|---|---|---|
+| `n_estimators` | 100, 300, 500 | Más árboles generalmente reduce varianza y estabiliza el desempeño, con costo computacional creciente; se prueba un rango moderado. |
+| `max_depth` | None, 10, 20 | `None` permite crecer hasta hojas puras (riesgo de sobreajuste); 10 y 20 limitan la complejidad para comparar contra árboles más simples. |
+| `min_samples_leaf` | 1, 2, 4 | Valores mayores actúan como regularización, evitando hojas que memoricen casos individuales (reduce overfitting). |
+| `max_features` | 'sqrt', 'log2' | Valores recomendados para clasificación; introducen diversidad entre árboles (menos correlación entre ellos, lo que mejora el efecto del ensamble). |
+
+
+```{python}
+param_grid = {
+    'n_estimators': [100, 300, 500],
+    'max_depth': [None, 10, 20],
+    'min_samples_leaf': [1, 2, 4],
+    'max_features': ['sqrt', 'log2'],
+}
+
+cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+
+base_model = RandomForestClassifier(
+    random_state=42,
+    n_jobs=-1,
+    class_weight='balanced',
+)
+
+grid_search = GridSearchCV(
+    estimator=base_model,
+    param_grid=param_grid,
+    scoring='f1_macro',
+    cv=cv,
+    n_jobs=-1,
+    verbose=1,
+)
+
+grid_search.fit(X_train, y_train)
+
+print("\n=== Mejores hiperparámetros encontrados ===")
+print(grid_search.best_params_)
+print(f"Mejor F1 macro promedio (CV) en train: {grid_search.best_score_:.4f}")
+
+best_model = grid_search.best_estimator_
+```
+
+## Evaluación final sobre el conjunto de prueba
+
+El modelo final (`best_model`) se evalúa sobre `X_test`/`y_test`, que no participó en el entrenamiento ni en la búsqueda de hiperparámetros. Esto da una estimación de cómo se comporta el modelo con datos nuevos.
+
+```{python}
+y_pred = best_model.predict(X_test)
+
+acc = accuracy_score(y_test, y_pred)
+bal_acc = balanced_accuracy_score(y_test, y_pred)
+f1_macro = f1_score(y_test, y_pred, average='macro')
+
+print("\n=== Métricas de desempeño en el conjunto de prueba ===")
+print(f"Accuracy:              {acc:.4f}")
+print(f"Balanced accuracy:     {bal_acc:.4f}")
+print(f"F1 macro:              {f1_macro:.4f}")
+```
+
+Obtenemos así que el mejor modelo de `RandomForest` registra un valor aproximado de 0.96 en todas las métricas, un desempeño muy bueno para la predicción general de las actividades.
+
+**¿Por qué estas métricas?**
+
+- **Accuracy:** métrica intuitiva y comparable directamente del desempeño del modelo en general.
+- **Balanced accuracy:** promedio del recall por clase. Es más informativa que accuracy simple cuando el número de muestras por actividad no es idéntico, porque evita que una clase mayoritaria "infle" el resultado.
+- **F1 macro:** combina precisión y recall por clase y promedia sin ponderar por soporte, por lo que penaliza fuerte si el modelo falla sistemáticamente en alguna actividad, aunque esa actividad tenga pocas muestras.
+
+```{python}
+print("\n=== Reporte de clasificación por clase ===")
+print(classification_report(y_test, y_pred, digits=3))
+```
+
+
+## Matriz de confusión e interpretación
+
+Se grafican 2 matrices de confusión, la primera con los conteos de las predicciones por clase y la segunda normalizada por fila (`normalize='true'`), es decir, cada fila representa el porcentaje de muestras de esa clase real que fueron asignadas a cada clase predicha. Esto facilita comparar clases con distinto número de muestras.
+
+```{python}
+labels_sorted = sorted(np.unique(y))
+
+cm = confusion_matrix(y_test, y_pred, labels=labels_sorted)
+
+fig, ax = plt.subplots(figsize=(8, 8))
+disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=labels_sorted)
+disp.plot(ax=ax, cmap='Blues', xticks_rotation=45, colorbar=True)
+ax.set_title('Matriz de confusión (Random Forest)')
+plt.tight_layout()
+plt.savefig('figures/confusion_matrix_rf.png', dpi=150)
+plt.show()
+```
+
+```{python}
+
+cm = confusion_matrix(y_test, y_pred, labels=labels_sorted, normalize='true')
+
+fig, ax = plt.subplots(figsize=(8, 8))
+disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=labels_sorted)
+disp.plot(ax=ax, cmap='Blues', xticks_rotation=45, values_format='.2f', colorbar=True)
+ax.set_title('Matriz de confusión normalizada (Random Forest)')
+plt.tight_layout()
+plt.savefig('figures/confusion_matrix_rf_norm.png', dpi=150)
+plt.show()
+```
+
+**Resultados matriz de confusión:**
+
+En general podemos observar que el modelo es capaz de predecir con bastante precisión, la mayoría de clases están por encima del 95% y teniendo algunas con predicciones perfectas, la única excepción resaltable sería la actividad 12 que fue clasificada erroneamente un 15% de las veces prediciendo en su lugar principalmente la actividad 11 y 6 y en menor medida la 15. Esto nos indica que para el modelo es difícil distinguir particularmente a la clase 12 entre las antes mencionadas.
+
+## Importancia de features
+
+Se reportan las 15 features más importantes según el modelo, para dar una interpretación de qué sensores/estadísticos aportan más información para distinguir actividades.
+
+```{python}
+feature_names = df.drop(columns=['activity']).columns
+importances = pd.Series(best_model.feature_importances_, index=feature_names)
+importances_sorted = importances.sort_values(ascending=False)
+
+print("\n=== Top 15 features más importantes ===")
+print(importances_sorted.head(15))
+
+fig, ax = plt.subplots(figsize=(8, 6))
+importances_sorted.head(15).sort_values().plot(kind='barh', ax=ax, color='steelblue')
+ax.set_xlabel('Importancia (Gini / MDI)')
+ax.set_title('Top 15 features más importantes - Random Forest')
+plt.tight_layout()
+plt.savefig('figures/feature_importances_rf.png', dpi=150)
+plt.show()
+```
+
+## Resumen de decisiones clave
+
+1. Se separaron datos de train/test (80/20, estratificado) para medir generalización real.
+2. Se eligió Random Forest por su robustez a escalas de features distintas, su tolerancia a ruido/outliers y su interpretabilidad vía `feature_importances_`.
+3. Los hiperparámetros (`n_estimators`, `max_depth`, `min_samples_leaf`, `max_features`) se afinaron con `GridSearchCV` + validación cruzada estratificada de 5 folds, optimizando F1 macro para no ignorar clases minoritarias.
+4. Se reportan accuracy, balanced accuracy, F1 macro por clase, además de la matriz de confusión normalizada, para tener una visión global y por clase del desempeño del modelo.
