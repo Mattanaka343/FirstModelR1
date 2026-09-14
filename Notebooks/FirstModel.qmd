@@ -192,6 +192,8 @@ df = df[
 print("Combined configuration:", df.shape)
 
 print("\nNaNs in df:", df.isna().sum().sum())
+
+df.to_csv('../Data/TransformedData.csv',index = False)
 ```
 
 ## Modelo 
