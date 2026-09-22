@@ -39,6 +39,7 @@ import re
 import numpy as np
 import pandas as pd
 from glob import glob
+import pickle 
 
 from sklearn.model_selection import train_test_split, StratifiedKFold, GridSearchCV
 from sklearn.ensemble import RandomForestClassifier
@@ -129,6 +130,9 @@ print(grid_search.best_params_)
 print(f"Mejor F1 macro promedio (CV) en train: {grid_search.best_score_:.4f}")
 
 best_model = grid_search.best_estimator_
+
+with open("random_forest.pkl", "wb") as file:
+    pickle.dump(best_model, file)
 ```
 
 ## Evaluación final sobre el conjunto de prueba
@@ -230,6 +234,7 @@ plt.show()
 El segundo modelo que se utilizó fue el SVC, también conocido como Support Vector Classifier. Se eligió este debido a su alta flexibilidad y capacidad para lidiar con regiones de distinción de formas complejas. 
 
 ```{python}
+from sklearn.pipeline import Pipeline
 
 pipeline = Pipeline([
     ("scaler", StandardScaler()),
@@ -264,6 +269,14 @@ print("Mejor accuracy en CV:", grid_search.best_score_)
 best_model = grid_search.best_estimator_
 y_pred_best = best_model.predict(X_test)
 print("\nAccuracy en test con mejor modelo:", accuracy_score(y_test, y_pred_best))
+
+pipeline = Pipeline([
+    ("scaler", StandardScaler()),
+    ("svc", best_model)
+])
+
+with open("svc.pkl", "wb") as file:
+    pickle.dump(pipeline, file)
 ```
 
 ### Panorama General
@@ -329,6 +342,10 @@ y_pred = pipeline.predict(X_test)
 print("\nAccuracy en test:", accuracy_score(y_test, y_pred))
 print("\nReporte de clasificación:\n", classification_report(y_test, y_pred))
 print("\nMatriz de confusión:\n", confusion_matrix(y_test, y_pred))
+
+
+with open("logistic_regressor.pkl", "wb") as file:
+    pickle.dump(pipeline,file)
 ```
 
 ### Panorama General
@@ -357,7 +374,7 @@ En términos generales, el modelo logra clasificar correctamente la mayoría de 
 
 ### En Resumen
 
-El modelo logra buenas predicciones, sin embargo no es el mejor para este caso debido a que las otras dos opciones no son mucho más 
+El modelo logra buenas predicciones, sin embargo no es el mejor para este caso debido a que las otras dos opciones no son mucho mejores .
 
 
 ## Conclusiones
@@ -371,3 +388,54 @@ Por otro lado, el modelo SVC obtuvo un accuracy de 91.2%, demostrando que tambi�
 Finalmente, Logistic Regression alcanzó un accuracy de 89%. Aunque obtuvo un resultado aceptable, fue el modelo con menor desempeño de los tres. Esto sugiere que las relaciones entre las características extraídas y las actividades no pueden representarse completamente mediante fronteras de decisión lineales. Aun así, el modelo permitió comprobar que un clasificador más sencillo puede obtener resultados razonables en este problema.
 
 Considerando el desempeño de los tres modelos, se selecciona Random Forest como la mejor opción para la actividad final del reto. Su mayor accuracy, balanced accuracy y F1 macro, junto con su capacidad para capturar relaciones no lineales, lo convierten en el modelo más adecuado para la clasificación de las señales. No obstante, la matriz de confusión muestra que todavía existen dificultades para distinguir algunas actividades, principalmente 006 y 012. Por ello, una posible mejora sería explorar nuevas características, como componentes FFT adicionales o medidas de relación entre sensores, que permitan representar mejor las diferencias entre actividades similares.
+
+
+```{python}
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+bar_data = df['activity'].value_counts()
+
+sns.barplot(bar_data)
+
+plt.title('Conteo de observaciones por actividad')
+
+```
+
+
+```{python}
+corr = df.corr(numeric_only=True)
+
+# Mask the lower triangle
+mask = np.tril(np.ones_like(corr, dtype=bool), k=-1)
+
+plt.figure(figsize=(14, 11))
+
+sns.heatmap(
+    corr,
+    mask=mask,
+    cmap="coolwarm",
+    vmin=-1,
+    vmax=1,
+    center=0,
+    square=True,
+    linewidths=0.3,
+    cbar_kws={"shrink": 0.8}
+)
+
+plt.title("Correlation Matrix", fontsize=16, pad=15)
+
+plt.xticks(
+    rotation=45,
+    ha="right",
+    fontsize=8
+)
+
+plt.yticks(
+    rotation=0,
+    fontsize=8
+)
+
+plt.tight_layout()
+plt.show()
+```
